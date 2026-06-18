@@ -1,0 +1,944 @@
+
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GeoTracker — Live Location Monitor</title>
+
+    <script th:src="@{'https://maps.googleapis.com/maps/api/js?key=' + ${@environment.getProperty('google.maps.api.key')} + '&libraries=geometry'}"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.6.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg:     #0a0e1a;
+            --panel:  #0f1628;
+            --border: #1e2d4d;
+            --accent: #00d4ff;
+            --accent2:#7b2fff;
+            --green:  #00ff88;
+            --warn:   #ffaa00;
+            --text:   #c8d8f0;
+            --dim:    #5a7090;
+            --card:   #111c35;
+            --glow:   0 0 20px rgba(0, 212, 255, 0.25);
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ── Header ── */
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            height: 56px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+            z-index: 10;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+        .pulse-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: 0 0 8px var(--green);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50%       { opacity: 0.5; transform: scale(0.7); }
+        }
+        .header-meta {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            font-size: 0.72rem;
+            color: var(--dim);
+            letter-spacing: 0.05em;
+        }
+        .fetch-counter {
+            background: rgba(0,212,255,0.1);
+            border: 1px solid rgba(0,212,255,0.3);
+            padding: 3px 10px;
+            border-radius: 4px;
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        /* ── Layout ── */
+        .layout { display: flex; flex: 1; overflow: hidden; }
+
+        /* ── Sidebar ── */
+        .sidebar {
+            width: 300px;
+            background: var(--panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .sidebar::-webkit-scrollbar { width: 4px; }
+        .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        .sidebar-section {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-section h3 {
+            font-size: 0.65rem;
+            letter-spacing: 0.15em;
+            color: var(--dim);
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        /* ── Coord rows ── */
+        .coord-row {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            transition: border-color 0.3s;
+        }
+        .coord-row.flash-new { border-color: var(--green); }
+        .coord-row .label {
+            font-size: 0.6rem;
+            color: var(--dim);
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+        .coord-row .value {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: 0.05em;
+            word-break: break-word;
+        }
+
+        /* ── Stat grid ── */
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .stat {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+        }
+        .stat-label { font-size: 0.6rem; color: var(--dim); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; }
+        .stat-value { font-size: 0.95rem; font-weight: 700; color: var(--accent); font-family: 'Courier New', monospace; }
+        .stat-value.green { color: var(--green); }
+        .stat-value.warn  { color: var(--warn); }
+
+        /* ── Status badge ── */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+        }
+        .badge.new   { background: rgba(0,255,136,0.12); border: 1px solid rgba(0,255,136,0.4); color: var(--green); }
+        .badge.seen  { background: rgba(90,112,144,0.15); border: 1px solid var(--border); color: var(--dim); }
+        .badge.idle  { background: rgba(255,170,0,0.1);  border: 1px solid rgba(255,170,0,0.3); color: var(--warn); }
+
+        /* ── City list ── */
+        .city-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 220px;
+            overflow-y: auto;
+        }
+        .city-list::-webkit-scrollbar { width: 4px; }
+        .city-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .city-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 0.62rem;
+            color: var(--dim);
+        }
+        .city-item .city-name { color: var(--text); font-weight: 600; }
+        .city-item .city-meta { color: var(--dim); font-size: 0.58rem; }
+
+        /* ── Countdown bar ── */
+        .countdown-bar {
+            height: 3px;
+            background: var(--border);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .countdown-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent2), var(--accent));
+            border-radius: 2px;
+            transition: width 1s linear;
+        }
+        .countdown-label {
+            font-size: 0.6rem;
+            color: var(--dim);
+            margin-top: 4px;
+            text-align: right;
+        }
+
+        /* ── Audio indicator ── */
+        .audio-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(123,47,255,0.08);
+            border: 1px solid rgba(123,47,255,0.3);
+            border-radius: 6px;
+            font-size: 0.7rem;
+            color: #a070ff;
+        }
+        @keyframes soundwave {
+            0%,100% { transform: scaleY(0.4); }
+            50%      { transform: scaleY(1.2); }
+        }
+        .wave-bars span {
+            display: inline-block;
+            width: 3px;
+            height: 12px;
+            background: #a070ff;
+            border-radius: 2px;
+            margin: 0 1px;
+            animation: soundwave 0.8s ease-in-out infinite;
+        }
+        .wave-bars span:nth-child(2) { animation-delay: 0.15s; }
+        .wave-bars span:nth-child(3) { animation-delay: 0.3s; }
+        .wave-bars span:nth-child(4) { animation-delay: 0.45s; }
+        .wave-bars { display: none; }
+        .wave-bars.speaking { display: flex; align-items: center; }
+
+        /* ── Conn dot ── */
+        .conn-status { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; }
+        .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+        .conn-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+        .conn-dot.error     { background: #ff4466;      box-shadow: 0 0 6px #ff4466; }
+
+        /* ── Map ── */
+        #map { flex: 1; background: #0a0e1a; }
+
+        /* ── Button ── */
+        .btn {
+            background: rgba(0,212,255,0.1);
+            border: 1px solid rgba(0,212,255,0.3);
+            color: var(--accent);
+            font-family: inherit;
+            font-size: 0.68rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            padding: 7px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+        }
+        .btn:hover { background: rgba(0,212,255,0.2); box-shadow: var(--glow); }
+        .btn + .btn { margin-top: 8px; }
+
+        @keyframes flash-in {
+            0%   { background: rgba(0,212,255,0.15); }
+            100% { background: transparent; }
+        }
+        .flash { animation: flash-in 0.6s ease-out; }
+    </style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+    <div class="brand">
+        <div class="pulse-dot"></div>
+        GeoTracker
+    </div>
+    <div class="header-meta">
+        <div class="conn-status">
+            <div class="conn-dot" id="connDot"></div>
+            <span id="connLabel">CONNECTING…</span>
+        </div>
+        <div class="fetch-counter">FETCH #<span id="fetchCount">0</span></div>
+        <span id="lastTime">—</span>
+    </div>
+</header>
+
+<div class="layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+        <!-- Live coordinates -->
+        <div class="sidebar-section">
+            <h3>Live Location</h3>
+            <div class="stat-grid">
+                <div class="stat">
+                    <div class="stat-label">Latitude</div>
+                    <div class="stat-value" id="lat">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Longitude</div>
+                    <div class="stat-value" id="lng">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Accuracy</div>
+                    <div class="stat-value warn" id="accuracy">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Source</div>
+                    <div class="stat-value green" id="sourceLabel">—</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Resolved address -->
+        <div class="sidebar-section">
+            <h3>Resolved Address</h3>
+            <div class="coord-row">
+                <div class="label">Full Address</div>
+                <div class="value" id="addressText" style="font-size:0.7rem;line-height:1.5;color:var(--text);">Waiting for fix…</div>
+            </div>
+            <div class="stat-grid">
+                <div class="stat">
+                    <div class="stat-label">City</div>
+                    <div class="stat-value" id="dispCity">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">ZIP</div>
+                    <div class="stat-value" id="dispZip">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">State</div>
+                    <div class="stat-value" id="dispState">—</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-label">Country</div>
+                    <div class="stat-value" id="dispCountry">—</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IndexedDB city cache -->
+        <div class="sidebar-section">
+            <h3>City Cache (IndexedDB)</h3>
+
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <div id="cityStatusBadge" class="badge idle">IDLE</div>
+                <span style="font-size:0.65rem;color:var(--dim);">
+                    <span id="cityCount">0</span> cities stored
+                </span>
+            </div>
+
+            <!-- Audio speaking indicator -->
+            <div class="audio-row" id="audioRow" style="display:none;margin-bottom:10px;">
+                <div class="wave-bars speaking" id="waveBars">
+                    <span></span><span></span><span></span><span></span>
+                </div>
+                <span id="audioLabel">Speaking…</span>
+            </div>
+
+            <!-- List of stored cities -->
+            <div class="city-list" id="cityList">
+                <div style="color:var(--dim);font-size:0.68rem;text-align:center;padding:8px;">
+                    No cities stored yet
+                </div>
+            </div>
+        </div>
+
+        <!-- Last Refresh Time -->
+        <div class="sidebar-section">
+            <h3>Last Refresh</h3>
+            <div class="stat-grid">
+                <div class="stat" style="grid-column:span 2;">
+                    <div class="stat-label">Time</div>
+                    <div class="stat-value green" id="lastRefreshTime" style="font-size:1rem;">Waiting...</div>
+                </div>
+                <div class="stat" style="grid-column:span 2;">
+                    <div class="stat-label">Date</div>
+                    <div class="stat-value" id="lastRefreshDate" style="font-size:0.8rem;">—</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Auto Refresh Interval -->
+        <div class="sidebar-section">
+            <h3>Auto Refresh</h3>
+
+            <!-- Interval selector -->
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <span style="font-size:0.65rem;color:var(--dim);letter-spacing:0.08em;">INTERVAL</span>
+                <select id="intervalSelect"
+                        onchange="changeInterval(this.value)"
+                        style="background:var(--card);border:1px solid var(--border);color:var(--accent);
+                           font-family:inherit;font-size:0.72rem;padding:4px 8px;
+                           border-radius:4px;cursor:pointer;outline:none;">
+                    <option value="15">15 seconds</option>
+                    <option value="30">30 seconds</option>
+                    <option value="60" selected>60 seconds</option>
+                    <option value="120">2 minutes</option>
+                    <option value="300">5 minutes</option>
+                </select>
+            </div>
+
+            <!-- Countdown bar -->
+            <div style="display:flex;justify-content:space-between;
+                        font-size:0.6rem;color:var(--dim);margin-bottom:4px;">
+                <span>NEXT FETCH</span>
+                <span>Every <span id="intervalDisplay">60s</span></span>
+            </div>
+            <div class="countdown-bar">
+                <div class="countdown-fill" id="countdownFill" style="width:100%"></div>
+            </div>
+            <div class="countdown-label">Next in <span id="countdownSec">60</span>s</div>
+
+            <!-- Buttons -->
+            <button class="btn" style="margin-top:12px;" onclick="getLocation(); resetCountdown();">
+                Refresh Now
+            </button>
+            <button class="btn" onclick="clearCityCache()">Clear City Cache</button>
+        </div>
+
+    </aside>
+
+    <!-- Google Map -->
+    <div id="map"></div>
+</div>
+
+<script>
+    // ══════════════════════════════════════════════════════════════════
+    // STATE
+    // ══════════════════════════════════════════════════════════════════
+    let map, marker, accuracyCircle, trailPolyline;
+    let geoDB        = null;
+    let fetchCount   = 0;
+    let isSpeaking   = false;
+
+    let INTERVAL_SEC = 60;
+    let countdownSec = INTERVAL_SEC;
+    let countdownId  = null;
+    let watchId      = null;
+    let heartbeatId  = null;
+    let processing   = false;
+
+    const GEO_OPTIONS = {
+        enableHighAccuracy: true,
+        timeout:            15000,
+        maximumAge:         0
+    };
+
+    // ══════════════════════════════════════════════════════════════════
+    // 1.  GOOGLE MAPS
+    // ══════════════════════════════════════════════════════════════════
+    function initMap() {
+        const def = { lat: 37.3861, lng: -122.0839 };
+        map = new google.maps.Map(document.getElementById("map"), {
+            zoom: 16, center: def,
+            mapTypeControl: false, streetViewControl: false,
+            fullscreenControl: true, zoomControl: true,
+            styles: [
+                { elementType:"geometry",           stylers:[{color:"#0a0e1a"}] },
+                { elementType:"labels.text.stroke", stylers:[{color:"#0a0e1a"}] },
+                { elementType:"labels.text.fill",   stylers:[{color:"#4a6090"}] },
+                { featureType:"road", elementType:"geometry",         stylers:[{color:"#1e2d4d"}] },
+                { featureType:"road", elementType:"labels.text.fill", stylers:[{color:"#3a5070"}] },
+                { featureType:"water",    elementType:"geometry", stylers:[{color:"#060d1a"}] },
+                { featureType:"poi",      elementType:"geometry", stylers:[{color:"#0d1830"}] },
+                { featureType:"landscape",elementType:"geometry", stylers:[{color:"#0c1225"}] },
+                { featureType:"administrative",elementType:"geometry.stroke",stylers:[{color:"#1e2d4d"}] },
+            ],
+        });
+        marker = new google.maps.Marker({
+            position: def, map, title:"Device Location",
+            icon:{ path:google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+                   scale:7, fillColor:"#00d4ff", fillOpacity:1,
+                   strokeColor:"#ffffff", strokeWeight:2, rotation:0 },
+        });
+        accuracyCircle = new google.maps.Circle({
+            map, center:def, radius:20,
+            strokeColor:"#00d4ff", strokeOpacity:0.4, strokeWeight:1,
+            fillColor:"#00d4ff", fillOpacity:0.06,
+        });
+        trailPolyline = new google.maps.Polyline({
+            map, path:[], strokeColor:"#7b2fff",
+            strokeOpacity:0.7, strokeWeight:2, geodesic:true,
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 2.  INDEXED DB
+    // ══════════════════════════════════════════════════════════════════
+    function initIndexedDB() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open("GeoTrackerDB", 2);
+            req.onupgradeneeded = function(e) {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains("cities")) {
+                    const s = db.createObjectStore("cities", { keyPath:"key" });
+                    s.createIndex("city",    "city",    { unique:false });
+                    s.createIndex("country", "country", { unique:false });
+                }
+            };
+            req.onsuccess = function(e) {
+                geoDB = e.target.result;
+                console.log("[IndexedDB] Ready");
+                refreshCityListUI();
+                resolve();
+            };
+            req.onerror = function(e) { reject(e.target.error); };
+        });
+    }
+
+    function buildKey(city, zip, country) {
+        return [city,zip,country].map(s=>(s||"").trim().toLowerCase()).join("|");
+    }
+    function cityKeyExists(key) {
+        return new Promise(resolve => {
+            if (!geoDB) { resolve(false); return; }
+            const r = geoDB.transaction(["cities"],"readonly").objectStore("cities").get(key);
+            r.onsuccess = () => resolve(!!r.result);
+            r.onerror   = () => resolve(false);
+        });
+    }
+    function saveCity(city, zip, country) {
+        const key = buildKey(city, zip, country);
+        return cityKeyExists(key).then(exists => {
+            if (exists) return "exists";
+            return new Promise((resolve, reject) => {
+                const tx = geoDB.transaction(["cities"],"readwrite");
+                tx.objectStore("cities").add({
+                    key, city:city||"Unknown",
+                    zip:zip||"", country:country||"",
+                    firstSeen: new Date().toISOString()
+                });
+                tx.oncomplete = () => { refreshCityListUI(); resolve("added"); };
+                tx.onerror    = e  => reject(e.target.error);
+            });
+        });
+    }
+    function getAllCities() {
+        return new Promise(resolve => {
+            if (!geoDB) { resolve([]); return; }
+            const r = geoDB.transaction(["cities"],"readonly").objectStore("cities").getAll();
+            r.onsuccess = () => resolve(r.result||[]);
+            r.onerror   = () => resolve([]);
+        });
+    }
+    function clearCityCache() {
+        if (!geoDB) return;
+        const tx = geoDB.transaction(["cities"],"readwrite");
+        tx.objectStore("cities").clear();
+        tx.oncomplete = () => { refreshCityListUI(); setBadge("idle"); };
+    }
+    function refreshCityListUI() {
+        getAllCities().then(rows => {
+            document.getElementById("cityCount").textContent = rows.length;
+            const list = document.getElementById("cityList");
+            if (!rows.length) {
+                list.innerHTML = '<div style="color:var(--dim);font-size:.68rem;text-align:center;padding:8px;">No cities stored yet</div>';
+                return;
+            }
+            rows.sort((a,b) => b.firstSeen.localeCompare(a.firstSeen));
+            list.innerHTML = rows.map(r=>`
+                <div class="city-item">
+                    <div>
+                        <div class="city-name">${r.city}</div>
+                        <div class="city-meta">${r.zip||"—"} &bull; ${r.country||"—"}</div>
+                    </div>
+                    <div class="city-meta">${r.firstSeen.slice(0,10)}</div>
+                </div>`).join("");
+        });
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 3.  LOCATION TRACKING
+    // ══════════════════════════════════════════════════════════════════
+    function getLocation() {
+        if (!navigator.geolocation) {
+            console.warn("[Geo] Geolocation not supported");
+            return;
+        }
+        console.log("[Geo] getLocation() called — getCurrentPosition");
+        navigator.geolocation.getCurrentPosition(
+            onLocationSuccess,
+            onLocationError,
+            GEO_OPTIONS
+        );
+    }
+
+    function startLocationTracking() {
+        if (!navigator.geolocation) return;
+
+        watchId = navigator.geolocation.watchPosition(
+            onLocationSuccess,
+            onLocationError,
+            GEO_OPTIONS
+        );
+        console.log("[Geo] watchPosition active, id =", watchId);
+
+        scheduleHeartbeat();
+        startCountdown();
+    }
+
+    function scheduleHeartbeat() {
+        if (heartbeatId) clearInterval(heartbeatId);
+        heartbeatId = setInterval(() => {
+            console.log("[Geo] Heartbeat fired (interval = " + INTERVAL_SEC + "s)");
+            getLocation();
+            resetCountdown();
+        }, INTERVAL_SEC * 1000);
+    }
+
+    function changeInterval(sec) {
+        INTERVAL_SEC = parseInt(sec, 10);
+        console.log("[Geo] Interval changed to", INTERVAL_SEC, "s");
+        resetCountdown();
+        scheduleHeartbeat();
+        startCountdown();
+        document.getElementById("intervalDisplay").textContent = INTERVAL_SEC + "s";
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 4.  LOCATION SUCCESS / ERROR HANDLERS
+    // ══════════════════════════════════════════════════════════════════
+    function onLocationSuccess(position) {
+        if (processing) {
+            console.log("[Geo] Skipped (processing lock active)");
+            return;
+        }
+        processing = true;
+
+        const lat      = position.coords.latitude;
+        const lng      = position.coords.longitude;
+        const accuracy = position.coords.accuracy;
+        const now      = new Date();
+
+        fetchCount++;
+        document.getElementById("fetchCount").textContent = fetchCount;
+
+        document.getElementById("lastTime").textContent        = now.toLocaleTimeString();
+        document.getElementById("lastRefreshTime").textContent = now.toLocaleTimeString();
+        document.getElementById("lastRefreshDate").textContent = now.toLocaleDateString();
+
+        document.getElementById("lat").textContent        = lat.toFixed(6) + "°";
+        document.getElementById("lng").textContent        = lng.toFixed(6) + "°";
+        document.getElementById("accuracy").textContent   = "±" + accuracy.toFixed(1) + " m";
+        document.getElementById("sourceLabel").textContent = "GPS";
+
+        const pos = { lat, lng };
+        marker.setPosition(pos);
+        accuracyCircle.setCenter(pos);
+        accuracyCircle.setRadius(accuracy);
+        map.panTo(pos);
+
+        fetchAddressAndProcess(lat, lng)
+            .finally(() => { processing = false; });
+
+        sendToServer(lat, lng, accuracy,
+            position.coords.altitude,
+            position.coords.speed,
+            position.coords.heading);
+    }
+
+    function onLocationError(error) {
+        processing = false;
+        const msgs = {
+            1: "Permission denied — allow location in browser settings.",
+            2: "Location signal unavailable.",
+            3: "Request timed out.",
+        };
+        const msg = msgs[error.code] || "Unknown error.";
+        console.warn("[Geo] Error:", msg);
+        document.getElementById("sourceLabel").textContent = "ERROR";
+        document.getElementById("lastRefreshTime").textContent = "Error";
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 5.  REVERSE GEOCODE → EXTRACT → DB CHECK → SPEAK (first time)
+    // ══════════════════════════════════════════════════════════════════
+    function fetchAddressAndProcess(lat, lng) {
+        return fetch(`/api/geocode?lat=${lat}&lng=${lng}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (!data) return;
+
+                const address = data.formattedAddress || "";
+                const city    = (data.city       || extractCity(address)    || "").trim();
+                const zip     = (data.postalCode  || extractZip(address)    || "").trim();
+                const country = (data.country     || extractCountry(address) || "").trim();
+                const state   = (data.state       || "").trim();
+
+                document.getElementById("addressText").textContent = address || "—";
+                document.getElementById("dispCity").textContent    = city    || "—";
+                document.getElementById("dispZip").textContent     = zip     || "—";
+                document.getElementById("dispState").textContent   = state   || "—";
+                document.getElementById("dispCountry").textContent = country || "—";
+                if (marker) marker.setTitle(address);
+
+                if (!city) return;
+
+                // FIX 1: removed the duplicate speakLocation() call that
+                // appeared twice inside the "added" branch.
+                return saveCity(city, zip, country).then(result => {
+                    if (result === "added") {
+                        setBadge("new");
+                        console.log("[Cache] NEW:", buildKey(city, zip, country));
+                        // Fetch AI description then speak it
+                        speakCityDescription(city);
+                    } else {
+                        setBadge("seen");
+                        console.log("[Cache] Exists:", buildKey(city, zip, country));
+                    }
+                });
+            })
+            .catch(err => console.error("[Geocode]", err));
+    }
+
+    function extractCity(addr) {
+        if (!addr) return "";
+        const p = addr.split(",").map(s=>s.trim());
+        if (p.length >= 4) return p[p.length-3];
+        if (p.length === 3) return p[1];
+        return p[0];
+    }
+    function extractZip(addr) {
+        if (!addr) return "";
+        const m = addr.match(/\b\d{5}(-\d{4})?\b/);
+        return m ? m[0] : "";
+    }
+    function extractCountry(addr) {
+        if (!addr) return "";
+        const p = addr.split(",").map(s=>s.trim());
+        return p[p.length-1] || "";
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 6.  AI DESCRIPTION via MCP + TEXT-TO-SPEECH
+    //
+    //  speakCityDescription(city) — called ONLY when a brand-new city
+    //  is added to IndexedDB. It:
+    //    1. Calls the Anthropic API with the web_search MCP tool to get
+    //       a vivid, current description of the city.
+    //    2. Speaks the returned text via SpeechSynthesis.
+    //
+    //  FIX 2: city parameter is now used in the API message instead of
+    //          the previous hardcoded "Sunnyvale California".
+    //  FIX 3: null-guard added — returns early if city is falsy.
+    //  FIX 4: speechSynthesis.speak() is called AFTER the textBlock
+    //          null-check, not before.
+    //  FIX 5: errorMsg is now a local variable, not a bare DOM reference
+    //          that would throw ReferenceError.
+    // ══════════════════════════════════════════════════════════════════
+    async function speakCityDescription(city) {
+        // FIX 3: guard against null/empty city
+        if (!city) {
+            console.warn("[TTS] No city provided — skipping.");
+            return;
+        }
+
+        if (!window.speechSynthesis) {
+            console.warn("[TTS] SpeechSynthesis not supported.");
+            return;
+        }
+
+        // FIX 5: declare errorRow locally so there is no ReferenceError
+        const audioRow  = document.getElementById("audioRow");
+        const audioLabel = document.getElementById("audioLabel");
+
+        try {
+            const response = await fetch("https://api.anthropic.com/messages", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    model: "claude-sonnet-4-20250514",
+                    max_tokens: 1000,
+                    tools: [
+                        { type: "web_search_20250305", name: "web_search" }
+                    ],
+                    system: `You are a poetic travel writer with deep geographic knowledge.
+When given a city name, write a vivid, evocative 2-3 paragraph spoken description of that location.
+Cover its atmosphere, culture, landmarks, and cuisine.
+Write in an elegant, literary style — factual yet atmospheric.
+Do NOT use bullet points, headers, or markdown. Return only plain flowing prose suitable for text-to-speech.`,
+                    messages: [
+                        {
+                            role: "user",
+                            // FIX 2: use the actual city parameter, not hardcoded text
+                            content: `Write a vivid spoken description of the city: ${city}. ` +
+                                     `Use your web search tool for current details, then compose an evocative description.`
+                        }
+                    ]
+                })
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData?.error?.message || `API error ${response.status}`);
+            }
+
+            const data = await response.json();
+
+            const textBlock = data.content
+                .filter(block => block.type === "text")
+                .map(block => block.text)
+                .join("\n\n")
+                .trim();
+
+            // FIX 4: guard before speaking
+            if (!textBlock) {
+                console.warn("[TTS] Empty description returned from API.");
+                return;
+            }
+
+            speechSynthesis.cancel();
+
+            const utt = new SpeechSynthesisUtterance(textBlock);
+            utt.lang   = "en-US";
+            utt.rate   = 0.80;
+            utt.pitch  = 1.0;
+            utt.volume = 1.0;
+
+            utt.onstart = () => {
+                isSpeaking = true;
+                audioRow.style.display   = "flex";
+                audioLabel.textContent   = "Speaking: " + city;
+            };
+            utt.onend = utt.onerror = () => {
+                isSpeaking = false;
+                audioRow.style.display = "none";
+            };
+
+            speechSynthesis.speak(utt);
+
+        } catch (err) {
+            console.error("[TTS/API]", err.message);
+            // Surface error in the audio row instead of crashing
+            audioLabel.textContent = "Error: " + err.message;
+            audioRow.style.display = "flex";
+            setTimeout(() => { audioRow.style.display = "none"; }, 4000);
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 7.  BADGE + COUNTDOWN
+    // ══════════════════════════════════════════════════════════════════
+    function setBadge(type) {
+        const el = document.getElementById("cityStatusBadge");
+        el.className   = "badge " + type;
+        el.textContent = { new:"NEW CITY ADDED", seen:"ALREADY VISITED", idle:"IDLE" }[type] || "IDLE";
+    }
+
+    function resetCountdown() {
+        countdownSec = INTERVAL_SEC;
+        document.getElementById("countdownSec").textContent  = INTERVAL_SEC;
+        document.getElementById("countdownFill").style.width = "100%";
+    }
+
+    function startCountdown() {
+        if (countdownId) clearInterval(countdownId);
+        resetCountdown();
+        countdownId = setInterval(() => {
+            if (countdownSec > 0) {
+                countdownSec--;
+                document.getElementById("countdownSec").textContent  = countdownSec;
+                document.getElementById("countdownFill").style.width =
+                    (countdownSec / INTERVAL_SEC * 100) + "%";
+            }
+        }, 1000);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 8.  BACKEND
+    // ══════════════════════════════════════════════════════════════════
+    function sendToServer(lat, lng, accuracy, altitude, speed, heading) {
+        fetch("/api/location/browser", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({
+                latitude:lat, longitude:lng,
+                accuracy:accuracy||0, altitude:altitude||0,
+                speed:speed||0, heading:heading||0,
+                source:"BROWSER_GEOLOCATION", status:"ACTIVE",
+                timestamp: new Date().toISOString()
+            }),
+        })
+        .then(r => r.json())
+        .then(res => console.log("[Server]", res.status))
+        .catch(err => console.warn("[Server] Offline:", err));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 9.  WEBSOCKET
+    // ══════════════════════════════════════════════════════════════════
+    function connectWebSocket() {
+        const socket = new SockJS("/ws");
+        const stomp  = Stomp.over(socket);
+        stomp.debug  = null;
+        stomp.connect({}, () => {
+            setConnStatus(true);
+            stomp.subscribe("/topic/location", () => console.log("[WS] Push received"));
+        }, () => {
+            setConnStatus(false);
+            setTimeout(connectWebSocket, 10000);
+        });
+    }
+    function setConnStatus(ok) {
+        document.getElementById("connDot").className     = "conn-dot " + (ok ? "connected" : "error");
+        document.getElementById("connLabel").textContent = ok ? "LIVE" : "RECONNECTING...";
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 10.  PAGE INIT
+    //
+    //  FIX 6: removed the erroneous speakLocation(null, null, null) call
+    //         that was at the bottom of window.onload — it served no
+    //         purpose and would have crashed (city is null).
+    // ══════════════════════════════════════════════════════════════════
+    window.onload = async function () {
+        await initIndexedDB();
+        initMap();
+        connectWebSocket();
+
+        console.log("[Init] Calling getLocation() immediately on page load");
+        getLocation();
+
+        startLocationTracking();
+
+        document.getElementById("intervalDisplay").textContent = INTERVAL_SEC + "s";
+        // FIX 6: removed speakLocation(null, null, null) — it was a stray
+        //        debug call that would crash immediately on page load.
+    };
+</script>
+</body>
+</html>
