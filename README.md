@@ -43,7 +43,8 @@ cd geo-tracker
 mvn spring-boot:run
 ```
 
-Then open: **http://localhost:5000**
+Then Local: **http://localhost:8080**
+Application URL: **www.cityguide.website**
 
 ### 3. Replace Simulation with Real GPS
 
