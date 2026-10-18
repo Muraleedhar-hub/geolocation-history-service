@@ -1,7 +1,33 @@
-# GeoTracker — Fetch Location History By Connecting Claude API
+# City Guide — Fetch Location History By Connecting Claude API
 
-A Spring Boot application that fetches local geolocation data every 10 seconds
-and displays it live on a Google Maps interface via WebSocket.
+City Guide is a live location web app. It finds where you are, shows you on a dark-themed Google Map, and tells you about the city around you.
+
+Visit: www.cityguide.website
+
+What the page shows
+
+Header: an outline of the country you’re in with a pulsing dot on your position, the CITY GUIDE title, today’s date and time (date in the country’s own format), a LIVE connection status, and the current weather (°C/°F and humidity).
+Map: your position as a marker you can change to a car, bus, train, bike, and so on, with an accuracy circle and a trail of where you’ve been.
+Sidebar:
+Resolved Address: the full address, city, ZIP, state and country.
+Nearest Place: the closest attraction, museum, park or landmark, with the distance.
+City Guide: an AI-written summary of the city that can be read aloud.
+City Cache: the cities you’ve visited, saved in your browser, with the date and time first seen.
+Refresh: the last refresh time, the auto-refresh interval, and buttons for refreshing now or clearing the cache.
+Map Marker: the vehicle picker.
+Live Location: latitude, longitude, accuracy and source.
+
+How it works
+
+The browser gets your GPS position, refreshing automatically every 15 seconds to 5 minutes.
+/api/geocode turns the coordinates into an address.
+When you enter a new city (or on each page load), /api/city-guide asks Spring AI and AWS Bedrock for a guide, and the browser reads it aloud.
+Each position is sent to /api/location/browser and pushed over a WebSocket (/ws), which drives the LIVE indicator.
+The nearest place comes from the Google Places API, and the weather from the free Open-Meteo service.
+
+Tech stack: Spring Boot, Thymeleaf, Google Maps JavaScript API, Spring AI with Bedrock, WebSocket (STOMP), and plain JavaScript with browser storage for the city cache. It’s deployed on EC2 with Java 21, and the cityguide.website domain points at CloudFront through Route 53.
+
+For testing without GPS, add ?lat=12.9716&lng=77.5946 to the URL.
 
 <img width="1917" height="1110" alt="image" src="https://github.com/user-attachments/assets/60820528-82e7-4a11-838c-aa1f04651c78" />
 
@@ -44,6 +70,7 @@ mvn spring-boot:run
 ```
 
 Then Local: **http://localhost:8080**
+
 Application URL: **www.cityguide.website**
 
 ### 3. Replace Simulation with Real GPS
