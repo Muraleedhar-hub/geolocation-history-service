@@ -3,7 +3,8 @@
 A Spring Boot application that fetches local geolocation data every 10 seconds
 and displays it live on a Google Maps interface via WebSocket.
 
-![img.png](img.png)
+<img width="1917" height="1110" alt="image" src="https://github.com/user-attachments/assets/60820528-82e7-4a11-838c-aa1f04651c78" />
+
 ## Architecture
 
 ```
